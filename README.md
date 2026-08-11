@@ -48,12 +48,11 @@ bin/mcinject-attach ──attach API──►  Minecraft JVM
 
 ## Setup
 
-Needs a JDK (the launcher ships a JRE, which can't compile). `build.sh` will find one, or fetch it:
+Requirements: a **JDK 21+** to build (the launcher ships a JRE, which can't compile), and **Node**
+if you want the MCP server. Works on macOS and Linux; on Windows use WSL or Git Bash.
 
-```bash
-mkdir -p ~/.mcinject/jdk && cd ~/.mcinject/jdk && \
-  curl -L 'https://api.adoptium.net/v3/binary/latest/25/ga/mac/aarch64/jdk/hotspot/normal/eclipse' | tar xz
-```
+`build.sh` finds a JDK via `JAVA_HOME`, `javac` on `PATH`, or `~/.mcinject/jdk/`. If none is found it
+prints the exact one-line command to fetch a no-install JDK from Adoptium for your OS and architecture.
 
 ```bash
 ./build.sh                        # javac + jar, no Maven or Gradle
