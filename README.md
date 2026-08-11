@@ -1,4 +1,8 @@
-# mcinject
+# MCInject
+
+<p align="center">
+  <img src="docs/hero.gif" width="840" alt="MCInject — attach, tap, read & write packets for a running Minecraft client, no restart">
+</p>
 
 Attach to a **running** Minecraft client, tap its Netty pipeline, and read or write packets live —
 no restart, no mod, no dropped connection. On top of that sits a generic reflection layer that can
