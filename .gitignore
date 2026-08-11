@@ -1,0 +1,21 @@
+# Build output
+/build/
+/dist/
+
+# Generated at build time (baked-in absolute paths — never commit)
+/bin/mcinject-attach
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local runtime state (session tokens, logs, downloaded JDK/libs) live outside the repo
+# in ~/.mcinject, but ignore any stray copies just in case.
+.mcinject/
+session.json
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/

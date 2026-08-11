@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Rebuild and hot-swap the agent inside the running game.
+#
+# The bootstrap class loads the core jar in a throwaway URLClassLoader, so re-attaching genuinely
+# replaces the code — new methods, new classes, new endpoints, all fine. Minecraft never restarts and
+# the player's connection is untouched; only the tap is briefly lifted out of the pipeline.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+./build.sh > /tmp/mcinject-build.log 2>&1 || { echo "build failed:"; tail -30 /tmp/mcinject-build.log; exit 1; }
+echo "==> built"
+exec ./bin/mcinject-attach attach "$@"

@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""mci — talk to the mcinject agent living inside the running Minecraft.
+
+  mci status                       agent + connection overview
+  mci channels                     discovered Netty channels and their pipelines
+  mci tap [install|remove]         splice / unsplice the packet tap
+  mci packets [-n N] [-d in|out] [-t substr]
+  mci packet <seq> [--depth N]     full introspection of one captured packet
+  mci stats                        packet counts by type
+  mci config key=value ...         recording/retainCount/mute/watch/block
+  mci search <text> [--class C] [--depth N] [--roots static]
+  mci inspect <target> [--depth N] target = h42 | primary | static:Cls#FIELD | seq:123
+  mci get <target> <field>
+  mci set <target> <field> <json>
+  mci call <target> <method> [json-args...] [--on-game-thread <target>]
+  mci class <name>                 fields / methods / constructors
+  mci classes <substr>             loaded class names
+  mci clone <target> field=json .. copy a packet with components replaced
+  mci send <target> [--in]         write a packet to the server (or fake one to the client)
+  mci events [--since N] [--follow]
+  mci log [-n N]
+  mci raw <METHOD> <path> [json]   escape hatch
+"""
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+SESSION = os.path.expanduser("~/.mcinject/session.json")
+
+
+def session():
+    try:
+        with open(SESSION) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        sys.exit("No agent session found. Attach first:  ./bin/mcinject-attach attach")
+
+
+def req(method, path, body=None, timeout=70):
+    s = session()
+    url = f"http://127.0.0.1:{s['port']}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    r = urllib.request.Request(url, data=data, method=method)
+    r.add_header("X-MCInject-Token", s["token"])
+    if data:
+        r.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        payload = e.read().decode()
+        try:
+            err = json.loads(payload)
+            msg = err.get("error", payload)
+            if "--trace" in sys.argv and err.get("stack"):
+                msg += "\n" + err["stack"]
+            sys.exit(f"agent error: {msg}")
+        except json.JSONDecodeError:
+            sys.exit(f"HTTP {e.code}: {payload}")
+    except urllib.error.URLError as e:
+        sys.exit(f"cannot reach agent: {e}. Is Minecraft still running?")
+
+
+def out(o):
+    print(json.dumps(o, indent=2))
+
+
+def target_spec(s):
+    """Accepts h42, primary, channels[0], static:Cls#F, seq:123, or a path expression."""
+    if s.startswith("seq:"):
+        return {"seq": int(s[4:])}
+    if s.startswith("{"):
+        return json.loads(s)
+    return {"path": s}
+
+
+def argval(args, flag, default=None, cast=str):
+    if flag in args:
+        i = args.index(flag)
+        v = args[i + 1]
+        del args[i:i + 2]
+        return cast(v)
+    return default
+
+
+def main():
+    args = [a for a in sys.argv[1:] if a != "--trace"]
+    if not args or args[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return
+    cmd, rest = args[0], args[1:]
+
+    if cmd == "status":
+        out(req("GET", "/status"))
+    elif cmd == "channels":
+        out(req("GET", "/channels"))
+    elif cmd == "tap":
+        action = rest[0] if rest else "install"
+        out(req("POST", f"/tap/{action}", {}))
+    elif cmd == "packets":
+        n = argval(rest, "-n", 50, int)
+        d = argval(rest, "-d", "")
+        t = argval(rest, "-t", "")
+        since = argval(rest, "--since", 0, int)
+        r = req("GET", f"/packets?limit={n}&dir={d}&type={t}&since={since}")
+        for p in reversed(r["packets"]):
+            mark = "<-" if p["dir"] == "in" else "->"
+            print(f"{p['seq']:>7} {mark} {p['type']}"
+                  + ("" if p.get("retained") else "  (aged out)")
+                  + (f"  {p['handle']}" if p.get("handle") else ""))
+        print(f"-- {len(r['packets'])} shown, head={r['head']}")
+    elif cmd == "packet":
+        depth = argval(rest, "--depth", 6, int)
+        nodes = argval(rest, "--nodes", 400, int)
+        out(req("GET", f"/packet?seq={int(rest[0])}&depth={depth}&maxNodes={nodes}"))
+    elif cmd == "stats":
+        out(req("GET", "/packets/stats"))
+    elif cmd == "config":
+        body = {}
+        for kv in rest:
+            k, _, v = kv.partition("=")
+            if k in ("mute", "watch", "block"):
+                body[k] = [x for x in v.split(",") if x]
+            elif k == "recording":
+                body[k] = v.lower() in ("1", "true", "yes")
+            else:
+                body[k] = int(v)
+        out(req("POST", "/packets/config", body))
+    elif cmd == "search":
+        body = {"contains": rest[0]} if rest and not rest[0].startswith("-") else {}
+        if body:
+            rest = rest[1:]
+        oc = argval(rest, "--class")
+        if oc:
+            body["ofClass"] = oc
+        rx = argval(rest, "--regex")
+        if rx:
+            body["regex"] = rx
+        body["depth"] = argval(rest, "--depth", 12, int)
+        body["maxResults"] = argval(rest, "--max", 40, int)
+        body["maxMillis"] = argval(rest, "--ms", 8000, int)
+        roots = argval(rest, "--roots")
+        if roots == "static":
+            body["staticsPrefix"] = argval(rest, "--prefix", "net.minecraft")
+        elif roots:
+            body["roots"] = [target_spec(roots)]
+        out(req("POST", "/search", body))
+    elif cmd == "inspect":
+        depth = argval(rest, "--depth", 6, int)
+        nodes = argval(rest, "--nodes", 400, int)
+        out(req("POST", "/inspect", {"target": target_spec(rest[0]), "depth": depth, "maxNodes": nodes}))
+    elif cmd == "get":
+        out(req("POST", "/get", {"target": target_spec(rest[0]), "name": rest[1],
+                                 "depth": argval(rest, "--depth", 3, int)}))
+    elif cmd == "set":
+        out(req("POST", "/set", {"target": target_spec(rest[0]), "name": rest[1],
+                                 "value": json.loads(rest[2])}))
+    elif cmd == "call":
+        gt = argval(rest, "--on-game-thread")
+        depth = argval(rest, "--depth", 3, int)
+        types = argval(rest, "--types")
+        body = {"target": target_spec(rest[0]), "method": rest[1],
+                "args": [json.loads(a) for a in rest[2:]], "depth": depth}
+        if gt:
+            body["onGameThread"] = target_spec(gt)
+        if types:
+            body["types"] = types.split(",")
+        out(req("POST", "/call", body))
+    elif cmd == "new":
+        out(req("POST", "/new", {"class": rest[0], "args": [json.loads(a) for a in rest[1:]]}))
+    elif cmd == "clone":
+        overrides = {}
+        for kv in rest[1:]:
+            k, _, v = kv.partition("=")
+            overrides[k] = json.loads(v)
+        out(req("POST", "/clone", {"target": target_spec(rest[0]), "overrides": overrides}))
+    elif cmd == "send":
+        body = {"packet": target_spec(rest[0]), "dir": "in" if "--in" in rest else "out"}
+        out(req("POST", "/send", body))
+    elif cmd == "class":
+        out(req("GET", f"/class?name={rest[0]}"))
+    elif cmd == "classes":
+        out(req("GET", f"/classes?contains={rest[0]}&limit={argval(rest, '--limit', 200, int)}"))
+    elif cmd == "events":
+        since = argval(rest, "--since", 0, int)
+        if "--follow" in rest:
+            while True:
+                r = req("GET", f"/events?since={since}&wait=30000")
+                for e in r["events"]:
+                    print(json.dumps(e))
+                    since = e["seq"]
+        else:
+            out(req("GET", f"/events?since={since}"))
+    elif cmd == "log":
+        print(req("GET", f"/log?n={argval(rest, '-n', 100, int)}")["lines"])
+    elif cmd == "raw":
+        body = json.loads(rest[2]) if len(rest) > 2 else ({} if rest[0] != "GET" else None)
+        out(req(rest[0], rest[1], body))
+    elif cmd == "shutdown":
+        out(req("POST", "/shutdown", {}))
+    else:
+        sys.exit(f"unknown command: {cmd}\n{__doc__}")
+
+
+if __name__ == "__main__":
+    main()
